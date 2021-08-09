@@ -1,0 +1,334 @@
+---
+- name: Configure all other stuff for Arcane G3
+  hosts: arcaneg3
+  gather_facts: yes
+
+  vars:
+    yum_cache_dir: /var/cache/yum
+
+  tasks:
+
+  - name: template .arcanerc
+    template:
+      src: "files/user_profile/.arcanerc.j2"
+      dest: "~{{userAppli}}/.arcanerc"
+      owner: "{{userAppli}}"
+      group: "{{groupAppli}}"
+      mode: '0644'
+    tags: PROFILE,RPM
+
+  - name: add .arcanerc in .bash_profile
+    blockinfile:
+      path: "~{{userAppli}}/.bash_profile"
+      backup: yes
+      marker: "# {mark} ANSIBLE_ARCANE MANAGED BLOCK"
+      block: |
+        if [ -f ~/.arcanerc ]; then
+          . ~/.arcanerc
+        fi
+    tags: PROFILE,RPM
+
+  - name: test if {{ yum_cache_dir }} is already a mount point
+    stat:
+      path: "{{ yum_cache_dir }}/lost+found"
+    register: yum_cache_result
+    tags: YUM
+
+  - name: clean yum cache dir
+    command: yum --enablerepo='*' clean all
+    args:
+      warn: false
+    when: yum_cache_result.stat.exists == false
+    tags: YUM
+
+  - name: create lv for yum cache
+    lvol:
+      vg: infravg
+      lv: yum_lv
+      size: 2g
+      state: present
+    tags: YUM
+
+  - name: create new filesystem on yum lv
+    filesystem:
+      fstype: ext4
+      dev: /dev/infravg/yum_lv
+      resizefs: yes
+    tags: YUM
+
+  - name: mount yum lv on /var/cache/yum
+    mount:
+      name: /var/cache/yum
+      src: /dev/infravg/yum_lv
+      fstype: ext4
+      opts: "defaults,nodev"
+      dump: 1
+      passno: 2
+      state: mounted
+    tags: YUM
+
+  - name: set directory right on /var/cache/yum
+    file:
+      path: /var/cache/yum
+      owner: root
+      group: root
+      mode: 0755
+      state: directory
+      recurse: no
+    tags: YUM
+
+  - name: install snmp packages
+    yum:
+      name: "{{ packages }}"
+      enablerepo: "G03R03C00,standard-rhel7-optional,standard"
+    vars:
+      packages:
+      - net-snmp
+      - net-snmp-utils
+    notify: "snmpd_restart"
+    tags: SNMP
+
+  - name: Templates for SNMP
+    template:
+      src: "{{item.src}}"
+      dest: "{{item.dest}}"
+      owner: root
+      group: root
+      mode: '0600'
+    become: yes
+    with_items:
+      - { src: 'files/snmp_conf/snmpd.conf.ORI', dest: '/etc/snmp/snmpd.conf.ORI' }
+      - { src: 'files/snmp_conf/snmpd.conf.j2', dest: '/etc/snmp/snmpd.conf' }
+      - { src: 'files/snmp_conf/snmpd_arcane.conf.j2', dest: '/etc/snmp/snmpd_arcane.conf' }
+    notify: "snmpd_restart"
+    tags: SNMP
+
+# add snmpd entry in hosts.allow for opgpmas11 and drgpmas11
+  - name: add hosts.allow snmpd rights
+    lineinfile:
+      path: /etc/hosts.allow
+      line: "snmpd:{{item}}   # Monitoring exploitant"
+      insertbefore: "ALL:ALL:DENY"
+      backup: yes
+    with_items:
+      - "opgpmas11.nor.fr.ftgroup,10.114.176.73"
+      - "drgpmas11.nor.fr.ftgroup,10.114.177.74"
+    notify: "snmpd_restart"
+    tags: SNMP
+
+
+  - name: add user to cron.allow
+    lineinfile:
+      path: /etc/cron.allow
+      line: "{{userAppli}}"
+    tags: CRON
+
+  - name: define cron job
+    cron:
+      name: "Arcane QOS monitoring scripts"
+      user: "{{userAppli}}"
+      minute: "*/5"
+      hour: "*"
+      job: "{{appliQosPath}}/lance_scripts.sh > {{appliQosLogPath}}/lance_scripts.log 2>&1"
+    tags: CRON
+
+  - name: ensure operating directories exist
+    file:
+      path: "{{item}}"
+      state: directory
+      owner: "{{ userAppli }}"
+      group: "{{ groupAppli }}"
+    with_items:
+      - "{{appliQosPath}}"
+      - "{{appliQosPath}}/conf"
+      - "{{appliQosPath}}/snmp"
+      - "{{appliQosLogPath}}"
+    tags: QOS
+
+
+  - name: Templates for QOS
+    template:
+      src: "{{item.src}}"
+      dest: "{{item.dest}}"
+      owner: "{{userAppli}}"
+      group: "{{groupAppli}}"
+      mode: "{{item.mode}}"
+    with_items:
+      - { src: 'files/qos_scripts/gendiffaccesslog.sh.j2', dest: '{{appliQosPath}}/gendiffaccesslog.sh', mode: '0755' }
+      - { src: 'files/qos_scripts/gendiffCatalinaOutLog.sh.j2', dest: '{{appliQosPath}}/gendiffCatalinaOutLog.sh', mode: '0755' }
+      - { src: 'files/qos_scripts/jstatStats.sh', dest: '{{appliQosPath}}/jstatStats.sh', mode: '0755' }
+      - { src: 'files/qos_scripts/lance_scripts.sh.j2', dest: '{{appliQosPath}}/lance_scripts.sh', mode: '0755' }
+      - { src: 'files/qos_scripts/logtail', dest: '{{appliQosPath}}/logtail', mode: '0755' }
+      - { src: 'files/qos_scripts/ping_latency.sh.j2', dest: '{{appliQosPath}}/ping_latency.sh', mode: '0755' }
+      - { src: 'files/qos_scripts/stats_accesslog.sh.j2', dest: '{{appliQosPath}}/stats_accesslog.sh', mode: '0755' }
+      - { src: 'files/qos_scripts/stats_CatalinaOutlog.sh.j2', dest: '{{appliQosPath}}/stats_CatalinaOutlog.sh', mode: '0755' }
+      - { src: 'files/qos_scripts/TCPstatus.sh', dest: '{{appliQosPath}}/TCPstatus.sh', mode: '0755' }
+      - { src: 'files/qos_scripts/conf/hostsToPing.j2', dest: '{{appliQosPath}}/conf/hostsToPing', mode: '0644' }
+      - { src: 'files/qos_scripts/conf/stats_accesslog_arcwas.conf', dest: '{{appliQosPath}}/conf/stats_accesslog_arcwas.conf', mode: '0644' }
+      - { src: 'files/qos_scripts/snmp/accessLogStatResults_Pass.sh.j2', dest: '{{appliQosPath}}/snmp/accessLogStatResults_Pass.sh', mode: '0755' }
+      - { src: 'files/qos_scripts/snmp/catalinaOut_Pass.sh.j2', dest: '{{appliQosPath}}/snmp/catalinaOut_Pass.sh', mode: '0755' }
+      - { src: 'files/qos_scripts/snmp/jstatResults_Pass.sh.j2', dest: '{{appliQosPath}}/snmp/jstatResults_Pass.sh', mode: '0755' }
+      - { src: 'files/qos_scripts/snmp/pingResults_Pass.sh.j2', dest: '{{appliQosPath}}/snmp/pingResults_Pass.sh', mode: '0755' }
+      - { src: 'files/qos_scripts/snmp/TCPResults_Pass.sh.j2', dest: '{{appliQosPath}}/snmp/TCPResults_Pass.sh', mode: '0755' }
+    tags: QOS
+
+  - name: configure route for Avamar save
+    template:
+      src: "files/avamar_routes/route-eth2.j2"
+      dest: "/etc/sysconfig/network-scripts/route-eth2"
+      owner: "root"
+      group: "root"
+      mode: '0644'
+    when: "inventory_hostname[5:7] != 'db'"
+    tags: AVAMAR
+
+  - name: install ssl packages for nagios
+    yum:
+      name: "{{ packages }}"
+      enablerepo: "G03R03C00,standard-rhel7-optional,standard"
+    vars:
+      packages:
+      - openssl
+      - openssl-devel
+      - expat-devel
+      - ca-certificates
+    when: "inventory_hostname[5:7] != 'db'"
+    tags: NAGIOS
+
+  - name: Ensure nagios directory exists
+    file:
+      path: /images/nagios
+      state: directory
+    when: "inventory_hostname[5:7] != 'db'"
+    tags: NAGIOS
+
+  - name: Copy and unzip nagios RPM to server
+    unarchive:
+      src:  "files_too_big_for_gitlab/nagios/PI-NAG-AGT-TLG02R00C01.zip"
+      dest: /images/nagios
+      creates: /images/nagios/nagios-agent-G02R00C01-3.noarch.rpm
+    when: "inventory_hostname[5:7] != 'db'"
+    tags: NAGIOS
+
+  - name: Copy and unzip SysMon RPM to server
+    unarchive:
+      src:  "files_too_big_for_gitlab/nagios/PI-SMN-AGENT-TLG03R00C02.zip"
+      dest: /images/nagios
+      creates: /images/nagios/SysMon-3.0.02-g03r00c02.noarch.rpm
+    when: "inventory_hostname[5:7] != 'db'"
+    tags: NAGIOS
+
+  - name: install nagios
+    yum:
+      name: /images/nagios/nagios-agent-G02R00C01-3.noarch.rpm
+    when: "inventory_hostname[5:7] != 'db'"
+    tags: NAGIOS
+
+  - name: upgrade SysMon
+    yum:
+      name: /images/nagios/SysMon-3.0.02-g03r00c02.noarch.rpm
+    when: "inventory_hostname[5:7] != 'db'"
+    tags: NAGIOS
+
+  - name: Templates for Nagios
+    template:
+      src: "{{item.src}}"
+      dest: "{{item.dest}}"
+      owner: "nagiosagent"
+      group: "nagiosagent"
+      mode: '0666'
+      backup: yes
+    with_items:
+      - { src: 'files/nagios/agent.cfg.j2', dest: '/opt/nagiosagent/current/conf/agent.cfg' }
+      - { src: 'files/nagios/config_linux_mastersup.xml.j2', dest: '/opt/nagiosagent/current/conf/config_linux_mastersup.xml' }
+    notify: "nagios_restart"
+    when: "inventory_hostname[5:7] != 'db'"
+    tags: NAGIOS
+
+  - name: Create directories for rpm usage by adarcwas
+    file:
+      path: "{{item}}"
+      state: directory
+      owner: "{{ userAppli }}"
+      group: "{{ groupAppli }}"
+    with_items:
+      - "~{{userAppli}}/lib/rpm"
+      - "/usr/{{instanceName}}"
+    when: "inventory_hostname[5:8] == 'ase'"
+    tags: RPM
+
+  - name: template .rpmmacros
+    template:
+      src: "files/user_profile/.rpmmacros.j2"
+      dest: "~{{userAppli}}/.rpmmacros"
+      owner: "{{userAppli}}"
+      group: "{{groupAppli}}"
+      mode: '0644'
+    when: "inventory_hostname[5:8] == 'ase'"
+    tags: RPM
+
+  - name: correct bugs in OperateApacheAll.ksh
+    template:
+      src: "files/operate/OperateApacheAll.ksh"
+      dest: "/opt/apache/operating/bin/OperateApacheAll.ksh"
+      owner: "root"
+      group: "root"
+      mode: '0744'
+    when: "inventory_hostname[5:7] == 'as' or inventory_hostname[5:7] == 'rp'"
+    tags: APACHE
+
+  - name: Configure net.ipv4.tcp_tw_recycle in sysctl.conf
+    blockinfile:
+      path: "/etc/sysctl.conf"
+      backup: yes
+      marker: "# {mark} ANSIBLE_ARCANE MANAGED BLOCK"
+      block: |
+        # Mandatory for Arcane G3
+        net.ipv4.tcp_tw_recycle = 0
+    register: tcp_tw_recycle
+    when: "inventory_hostname[5:7] != 'db'"
+    tags: SYSCTL
+
+  - name: Configure net.ipv4.tcp_tw_recycle in memory
+    command: sysctl -w net.ipv4.tcp_tw_recycle=0
+    when: "tcp_tw_recycle.changed and inventory_hostname[5:7] != 'db'"
+    tags: SYSCTL
+
+  - name: test if routeExp signature exists
+    stat:
+      path: "/etc/signatures/PI-RTG-ROUTEEXP_S6F10-ROUTES_G01R02C58.SIG"
+    register: routeexp_signature
+    when: "inventory_hostname[5:7] != 'db'"
+    tags: ROUTEEXP
+
+  - name: copy routeEXP script
+    copy:
+      src: files/routeEXP/Install_Unix_RouteEXP_S6F10_-_Routages_G01R02C58.ksh
+      dest: /images
+      mode: u=rwx,g=r,o=r
+    when:  "inventory_hostname[5:7] != 'db' and (not routeexp_signature.stat.exists)"
+    tags: ROUTEEXP
+
+  - name: execute script
+    command: /images/Install_Unix_RouteEXP_S6F10_-_Routages_G01R02C58.ksh
+    when:  "inventory_hostname[5:7] != 'db' and (not routeexp_signature.stat.exists)"
+    tags: ROUTEEXP
+
+  handlers:
+  - name: enable and restart snmpd service
+    systemd:
+      state: restarted
+      enabled: yes
+      daemon_reload: yes
+      name: snmpd
+    listen: "snmpd_restart"
+    tags: SNMP
+
+  - name: enable and restart nagios service
+    systemd:
+      state: restarted
+      enabled: yes
+      daemon_reload: yes
+      name: nagiosAgent
+    listen: "nagios_restart"
+    tags: NAGIOS
