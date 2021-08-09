@@ -1,0 +1,116 @@
+---
+- name: Configure RP
+  hosts: arcaneg3_rp
+  gather_facts: yes
+
+  tasks:
+
+  - name: add Erable hosts in /etc/hosts
+    blockinfile:
+      path: "/etc/hosts"
+      backup: yes
+      block: |
+        # Erable pour hotspots wifi
+        #prod
+        80.12.102.114 monreseau-erb.orange.fr
+        #preprod
+        80.12.102.115 ppmonreseau-erb.orange.fr
+        #qualif
+        80.12.69.5 r-erable.orange.fr
+    tags: HOST
+    
+  - name: define entry for admin-apache in /etc/hosts
+    lineinfile:
+      path: /etc/hosts
+      backrefs: yes
+      regexp: '(.*-adm)$'
+      line: '\1  admin-apache'
+    notify: "apache_restart"
+    tags: APACHE
+
+  - name: remove unused config files
+    file:
+      path: "{{item}}"
+      state: absent
+    with_items:
+      - /opt/application/arcwas/current/apache246/conf.d/autoindex.conf
+      - /opt/application/arcwas/current/apache246/conf.d/autoindex.confNO
+      - /opt/application/arcwas/current/apache246/conf.d/filtrage_GASSI_HORS_PROD-DEV-QA.confNO
+      - /opt/application/arcwas/current/apache246/conf.d/filtrage_GASSI_PROD.confNO
+      - /opt/application/arcwas/current/apache246/conf.d/filtrage_GASSI_PROD_GIN.confNO
+      - /opt/application/arcwas/current/apache246/conf.d/filtrage_GUARDIAN_HORS_PROD-DEV-QA.confNO
+      - /opt/application/arcwas/current/apache246/conf.d/filtrage_GUARDIAN_PROD.confNO
+      - /opt/application/arcwas/current/apache246/conf.d/filtrage-ws.confNO
+      - /opt/application/arcwas/current/apache246/conf.d/mod_jk.confNO
+      - /opt/application/arcwas/current/apache246/conf.d/other.conf
+      - /opt/application/arcwas/current/apache246/conf.d/pagespeed.confNO
+      - /opt/application/arcwas/current/apache246/conf.d/pagespeed_libraries.confNO
+      - /opt/application/arcwas/current/apache246/conf.d/ssl.confNO
+      - /opt/application/arcwas/current/apache246/conf.d/workers.propertiesNO
+      - /opt/application/arcwas/current/apache246/conf.d/zzfiltrageSIU_PRO.confNO
+      - /opt/application/arcwas/current/apache246/conf.d/zzfiltrageSIU_QUA.confNO
+      - /opt/application/arcwas/current/apache246/conf.d/httpd_arcane.conf
+      - /opt/application/arcwas/current/apache246/conf.d/httpd_proxy_erable.conf
+    notify: "apache_restart"
+    tags: APACHE
+
+  - name: create new log directories
+    file:
+      path: "{{item}}"
+      owner: "{{userAppli}}"
+      group: "{{groupAppli}}"
+      mode: '0755'
+      state: directory
+    with_items:
+      - /opt/application/arcwas/logs/apache
+      - /opt/application/arcwas/logs/qos_logs
+    tags: APACHE
+
+  - name: test current Apache log directory
+    stat:
+      path: /opt/application/arcwas/current/apache246/logs
+    register: current_apache_log_dir
+    tags: APACHE
+
+  - name: move current Apache logs
+    shell: "mv /opt/application/arcwas/current/apache246/logs/* /opt/application/arcwas/logs/apache/"
+    when: current_apache_log_dir.stat.isdir is defined and current_apache_log_dir.stat.isdir
+    tags: APACHE
+
+  - name: delete current Apache log dir
+    file:
+      path: /opt/application/arcwas/current/apache246/logs
+      state: absent
+    when: current_apache_log_dir.stat.isdir is defined and current_apache_log_dir.stat.isdir
+    tags: APACHE
+
+  - name: create symlink to new Apache log dir
+    file:
+      path: /opt/application/arcwas/current/apache246/logs
+      src: /opt/application/arcwas/logs/apache
+      state: link
+    when: current_apache_log_dir.stat.isdir is defined and current_apache_log_dir.stat.isdir
+    notify: "apache_restart"
+    tags: APACHE
+
+  - name: Templates for Apache ASE/ASI
+    template:
+      src: "{{item.src}}"
+      dest: "{{item.dest}}"
+      owner: "{{userAppli}}"
+      group: "{{groupAppli}}"
+      mode: '0644'
+    with_items:
+      - { src: 'files/apache_conf/vhost-admin.conf', dest: '/opt/application/arcwas/current/apache246/conf.d/vhost-admin.conf' }
+      - { src: 'files/apache_conf/vhost-arcwas-rp.conf.j2', dest: '/opt/application/arcwas/current/apache246/conf.d/vhost-arcwas.conf' }
+      - { src: 'files/apache_conf/filtrage.conf.j2', dest: '/opt/application/arcwas/current/apache246/conf.d/filtrage.conf' }
+      - { src: 'files/apache_conf/xxfiltrage.conf', dest: '/opt/application/arcwas/current/apache246/conf.d/xxfiltrage.conf' }
+      - { src: 'files/apache_conf/httpd.conf.j2', dest: '/opt/application/arcwas/current/apache246/conf/httpd.conf' }
+    notify: "apache_restart"
+    tags: APACHE
+
+  handlers:
+  - name: restart Apache
+    command: /opt/operating/bin/OperateApacheAll.ksh restart arcwas
+    become: yes
+    listen: "apache_restart"
