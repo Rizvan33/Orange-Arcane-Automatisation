@@ -1,0 +1,117 @@
+---
+- name: Mise en Production d une Demande de Travaux Arcane - ags11 
+  hosts: arcaneg3_ags_main
+  tasks:
+  
+  - fail:
+      msg: "insert date and numDT variables on the comand line ! Example: ansible-playbook -i inventory/test arcmepags.yml -e 'date=20210319 numDT=164'"
+    when: date is not defined and numDT is not defined
+    tags: 
+      - COUVERTURE_TECHNQUE 
+      - PURGE 
+      - COUVERTURE_COMMERCIALE
+
+#Mise à jour de la couverture technique si elle est demandée
+
+  - name: Check if the CopyData.py file exists 
+    stat:
+      path: "/var/opt/arcgis/server/livraisons/Livraison_DT_{{ numDT }}_{{ date }}_Arcep/CopyData.py"
+    tags: COUVERTURE_TECHNQUE
+    register: couverture_technique
+
+  - name: new directory with date and numDT
+    file:
+      path: "/var/opt/arcgis/server/delivered/{{ date }}_DT{{ numDT }}"
+      owner: "{{ userAppli }}"
+      group: "{{ groupAppli }}"
+      state: directory
+    tags: COUVERTURE_TECHNQUE
+    when: couverture_technique.stat.exists 
+
+  - name: Copy CopyData.py
+    copy:
+      src: "/var/opt/arcgis/server/livraisons/Livraison_DT_{{ numDT }}_{{ date }}_Arcep/CopyData.py"
+      dest: "/var/opt/arcgis/server/delivered/{{ date }}_DT{{ numDT }}"
+      owner: "{{ userAppli }}"
+      group: "{{ groupAppli }}"
+      remote_src: yes
+    tags: COUVERTURE_TECHNQUE
+    when: couverture_technique.stat.exists
+
+  - name: unarchive
+    unarchive:
+      src: "/var/opt/arcgis/server/livraisons/Livraison_DT_{{ numDT }}_{{ date }}_Arcep/Couvertures_output.gdb.zip"
+      dest: "/var/opt/arcgis/server/delivered/{{ date }}_DT{{ numDT }}"
+      owner: "{{ userAppli }}"
+      group: "{{ groupAppli }}"
+      remote_src: yes
+    tags: COUVERTURE_TECHNQUE
+    when: couverture_technique.stat.exists
+
+  - name: execute postgresql
+    shell: "su - {{ userAppli }} -c 'cd /var/opt/arcgis/server/delivered/{{ date }}_DT{{ numDT }} ; /opt/ags/arcgis/server/tools/python CopyData.py --DBMS POSTGRESQL -S ${ARCGIS_RUN_BDD_SERVER_NAME} -D ${ARCGIS_RUN_BDD_DATABASE_NAME} -U ${ARCGIS_RUN_BDD_USER_NAME} -P ${ARCGIS_RUN_BDD_USER_PASSWORD} -I Couvertures_output.gdb/'"
+    args:
+      warn: false
+    register: output
+    tags: COUVERTURE_TECHNQUE
+    when: couverture_technique.stat.exists 
+
+  - name: show result of postgresql command
+    debug:
+      var: output.stdout_lines
+    tags: COUVERTURE_TECHNIQUE
+    when: couverture_technique.stat.exists 
+
+# Mise à jour de la couverture commerciale sur les AGS
+# Purge des anciens services
+
+  - name: execute purgeOldService
+    shell: "su - {{ userAppli }} -c 'cd /opt/ags/bin ; ./purgeOldService.sh run_yes'"
+    args:
+      warn: false
+    register: output
+    tags: PURGE
+
+  - name: show result of purge command
+    debug:
+      var: output.stdout_lines
+    tags: PURGE
+
+# Installation des nouveaux services
+
+  - name: new directory with date and numDT
+    file:
+      path: "/var/opt/arcgis/server/delivered/{{ date }}_DT{{ numDT }}"
+      owner: "{{ userAppli }}"
+      group: "{{ groupAppli }}"
+      state: directory
+    tags: COUVERTURE_COMMERCIALE
+
+  - name: unarchive
+    unarchive:
+      src: "/var/opt/arcgis/server/livraisons/Livraison_DT_{{ numDT }}_{{ date }}_Arcep/Arcep.tgz"
+      dest: "/var/opt/arcgis/server/delivered/{{ date }}_DT{{ numDT }}"
+      owner: "{{ userAppli }}"
+      group: "{{ groupAppli }}"
+      remote_src: yes
+    tags: COUVERTURE_COMMERCIALE
+
+  - name: execute script
+    shell: "su - {{ userAppli }} -c 'cd /var/opt/arcgis/server/delivered/{{ date }}_DT{{ numDT }}/Arcep ; {{item}}'"
+    args:
+      warn: false
+    with_items:
+      - "./1.prepareService.sh {{ date }} precalcul false false"
+      - "./2.installService.sh {{ date }} /var/opt/arcgis/application/services"
+      - "./3.publishService.sh {{ date }} /var/opt/arcgis/application/services"
+    register: output
+    tags: COUVERTURE_COMMERCIALE
+
+  - name: show result of script command
+    debug:
+      var: "{{item}}"
+    with_items:
+      - output.results[0].stdout_lines
+      - output.results[1].stdout_lines
+      - output.results[2].stdout_lines    
+    tags: COUVERTURE_COMMERCIALE
