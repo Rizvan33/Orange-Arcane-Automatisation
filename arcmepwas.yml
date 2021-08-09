@@ -1,0 +1,112 @@
+---
+- name: Mise en Production d une Demande de Travaux Arcane - ASE
+  hosts: arcaneg3_was
+  serial: 1
+  tasks:
+  
+  - fail: 
+      msg: "insert date and numDT variables on the comand line ! Example: ansible-playbook -i inventory/test arcmepwas.yml -e 'date=20210319 numDT=164'"
+    when: date is not defined and numDT is not defined
+    tags:
+      - SETRULE
+      - INSTALLATION_PATCH
+ 
+# Mise à jour de la couverture commerciale ASEs - modification règles de réécriture
+  - name: new directory with date and numDT
+    file:
+      path: "/opt/application/arcwas/delivered/{{ date }}_DT{{ numDT }}"
+      state: directory
+      owner: "{{userAppli }}"
+      group: "{{groupAppli }}"
+    tags: SETRULE
+
+  - name: copy file from ags with scp
+    shell: "su -l -c \"scp adarcags@{{inventory_hostname[0:2]}}arcags11:/var/opt/arcgis/server/livraisons/Livraison_DT_{{ numDT }}_{{ date }}_*/setRule*.* /opt/application/arcwas/delivered/{{ date }}_DT{{ numDT }}\" {{userAppli}}"
+    args:
+      warn: false
+    tags: SETRULE 
+
+  - name: execute setRule
+    shell: "su - {{ userAppli }} -c 'cd /opt/application/arcwas/delivered/{{ date }}_DT{{ numDT }} ; sh ./setRule.sh {{ date }}'"
+    args:
+      warn: false
+    register: output
+    tags: SETRULE
+
+  - name: show result of script command
+    debug:
+      var: output.stdout_lines
+    tags: SETRULE
+
+#Installation d un patch Popcorn - Cas TGZ
+  - name: copy file from ags with scp
+    shell: "su -l -c \"scp adarcags@{{inventory_hostname[0:2]}}arcags11:/var/opt/arcgis/server/livraisons/Livraison_DT_{{ numDT }}_{{ date }}_*/popcorn*.* /opt/application/arcwas/delivered/{{ date }}_DT{{ numDT }}\" {{userAppli}}"
+    args:
+      warn: false
+    tags: INSTALLATION_PATCH
+
+  - name: Finding TGZ files
+    find: 
+      paths: "/opt/application/arcwas/delivered/{{ date }}_DT{{ numDT }}"
+      patterns: "popcorn*.tgz"
+    tags: INSTALLATION_PATCH
+    register: tgz_result
+
+  - name: new directory mapV3_new
+    file:
+      path: "/opt/application/arcwas/current/apache246/www/html/mapV3_new"
+      state: directory
+      owner: "{{ userAppli }}"
+      group: "{{ groupAppli }}"
+    tags: INSTALLATION_PATCH
+    when: tgz_result.matched == 1
+
+  - name: unarchive
+    unarchive:
+      src: "{{ item }}"
+      dest: "/opt/application/arcwas/current/apache246/www/html/mapV3_new"
+      owner: "{{ userAppli }}"
+      group: "{{ groupAppli }}"
+      remote_src: yes
+    with_items: "{{ tgz_result.files[0].path }}"
+    tags: INSTALLATION_PATCH
+    when: tgz_result.matched == 1
+
+  # Necessary, given https://github.com/ansible/ansible/issues/35426
+  - name: Fix permissions on the extracted directory and all sub-directories
+    file:
+      path: "/opt/application/arcwas/current/apache246/www/html/mapV3_new"
+      owner: "{{ userAppli }}"
+      group: "{{ groupAppli }}"
+      recurse: yes
+    tags: INSTALLATION_PATCH
+    when: tgz_result.matched == 1
+
+  - name: new directory and copy with loop
+    shell: "su - {{ userAppli }} -c 'cd /opt/application/arcwas/current/apache246/www/html/mapV3_new ; {{ item }}'"
+    args:
+      warn: false
+    loop:
+      - "mkdir -p static/configEnv && cp -pv ../mapV3/static/configEnv/configPlateforme.yml $_"
+      - "mkdir -p mobile/conf_mr && cp -pv ../mapV3/mobile/conf_mr/arcane_config.json $_"
+      - "mkdir -p siteshs/data && cp -pv ../mapV3/siteshs/data/*.csv $_"
+    register: output
+    tags: INSTALLATION_PATCH
+    when: tgz_result.matched == 1
+
+  - name: show result of script command
+    debug:
+      var: "{{item}}"
+    with_items:
+      - output.results[0].stdout_lines
+      - output.results[1].stdout_lines
+      - output.results[2].stdout_lines    
+    tags: INSTALLATION_PATCH
+    when: tgz_result.matched == 1
+
+  - name: To finish
+    shell: "su - {{ userAppli }} -c 'cd /opt/application/arcwas/current/apache246/www/html ; mv mapV3 mapV3_{{ date }} && mv mapV3_new mapV3'"
+    args:
+      warn: false
+    tags: INSTALLATION_PATCH
+    when: tgz_result.matched == 1
