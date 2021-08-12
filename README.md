@@ -11,4 +11,5 @@ Suite au déploiement de la 5G en décembre 2020, les cartes de couverture rése
 en France.
 
 ansible-playbook -i inventory/test copy.yml
+
 ansible-playbook -i inventory/test arcmepwas.yml -e "date=20210319 numDT=164"
